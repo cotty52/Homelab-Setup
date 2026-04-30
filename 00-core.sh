@@ -139,122 +139,18 @@ mark_done "Hostname configured"
 
 # =============================================================================
 # STEP 7 — Create homelab directory structure
-# All stacks live under ~/homelab/<app-name>/
-# Each app gets its own subdirectory to keep compose files and data separate.
+# Everything lives under ~/homelab/ — one compose file, one data/ folder.
+# Persistent data for each app gets its own subfolder under data/ so files
+# stay organised without needing separate directories per app.
 # =============================================================================
 section "Creating homelab directory structure"
 
-# Core directories
-mkdir -p "$HOMELAB_DIR"/{portainer,jellyfin,nginx-proxy-manager,homarr}
+mkdir -p "$HOMELAB_DIR"/data/{portainer,jellyfin,nginx-proxy-manager,homarr}
 
-# Each app dir gets a data/ subfolder for persistent container data.
-# Docker Compose volumes will map into these paths.
-for app_dir in "$HOMELAB_DIR"/*/; do
-    mkdir -p "${app_dir}data"
-done
-
-# Set ownership back to the regular user (since we're running as root/sudo)
 chown -R "$HOMELAB_USER":"$HOMELAB_USER" "$HOMELAB_DIR"
 
 success "Homelab directory created at $HOMELAB_DIR"
 mark_done "Directory structure created"
-
-# =============================================================================
-# STEP 8 — Write starter Docker Compose files
-# These are minimal working configs to get the core stack running.
-# Edit the .env file in each folder to customize ports, paths, and credentials.
-# =============================================================================
-section "Writing starter Docker Compose files"
-
-# ── Portainer ─────────────────────────────────────────────────────────────
-# Portainer gives you a web GUI to manage all your Docker containers.
-# Access at: http://<server-ip>:9000
-cat > "$HOMELAB_DIR/portainer/docker-compose.yml" << 'EOF'
-services:
-  portainer:
-    image: portainer/portainer-ce:latest
-    container_name: portainer
-    restart: unless-stopped
-    ports:
-      - "9000:9000"
-      - "9443:9443"   # HTTPS — optional but recommended
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # allows Portainer to manage Docker
-      - ./data:/data
-EOF
-
-# ── Jellyfin ──────────────────────────────────────────────────────────────
-# Media server. Access at: http://<server-ip>:8096
-# Replace /path/to/media with the actual path to your media files.
-# Intel iGPU transcoding is commented out — see notes below to enable it.
-cat > "$HOMELAB_DIR/jellyfin/docker-compose.yml" << 'EOF'
-services:
-  jellyfin:
-    image: jellyfin/jellyfin:latest
-    container_name: jellyfin
-    restart: unless-stopped
-    network_mode: host   # host networking gives best performance for local streaming
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=America/New_York   # change to your timezone
-    volumes:
-      - ./data/config:/config
-      - ./data/cache:/cache
-      - /path/to/media:/media   # ← CHANGE THIS to your media folder path
-    # ── Intel iGPU hardware transcoding ───────────────────────────────────
-    # Uncomment the block below to enable hardware-accelerated transcoding.
-    # This makes a huge difference for 4K or multiple simultaneous streams.
-    # After enabling, go to Jellyfin Dashboard → Playback → Transcoding
-    # and select "Intel QSV" or "VA-API" as the hardware acceleration option.
-    #
-    # devices:
-    #   - /dev/dri:/dev/dri
-    # group_add:
-    #   - "render"   # may be needed depending on your kernel version
-EOF
-
-# ── Nginx Proxy Manager ───────────────────────────────────────────────────
-# Reverse proxy with a GUI. Lets you use friendly URLs like jellyfin.local
-# instead of IP:port. Access the admin UI at: http://<server-ip>:81
-# Default login: admin@example.com / changeme (you'll be prompted to change it)
-cat > "$HOMELAB_DIR/nginx-proxy-manager/docker-compose.yml" << 'EOF'
-services:
-  nginx-proxy-manager:
-    image: jc21/nginx-proxy-manager:latest
-    container_name: nginx-proxy-manager
-    restart: unless-stopped
-    ports:
-      - "80:80"     # HTTP traffic
-      - "443:443"   # HTTPS traffic
-      - "81:81"     # Admin web UI
-    volumes:
-      - ./data:/data
-      - ./data/letsencrypt:/etc/letsencrypt
-EOF
-
-# ── Homarr (dashboard) ────────────────────────────────────────────────────
-# A clean homepage/dashboard that links to all your services.
-# Access at: http://<server-ip>:7575
-cat > "$HOMELAB_DIR/homarr/docker-compose.yml" << 'EOF'
-services:
-  homarr:
-    image: ghcr.io/ajnart/homarr:latest
-    container_name: homarr
-    restart: unless-stopped
-    ports:
-      - "7575:7575"
-    volumes:
-      - ./data/configs:/app/data/configs
-      - ./data/icons:/app/public/icons
-      - /var/run/docker.sock:/var/run/docker.sock   # lets Homarr auto-detect running containers
-EOF
-
-# Fix ownership after writing files as root
-chown -R "$HOMELAB_USER":"$HOMELAB_USER" "$HOMELAB_DIR"
-
-success "Compose files written to $HOMELAB_DIR"
-mark_done "Docker Compose starter files created"
 
 # =============================================================================
 # Done
@@ -264,10 +160,13 @@ print_summary
 echo ""
 echo -e "${BOLD}Next steps:${RESET}"
 echo -e "  1. ${YELLOW}Log out and back in${RESET} so Docker group membership takes effect."
-echo -e "  2. Edit the Jellyfin compose file and set your media path:"
-echo -e "     ${CYAN}nano $HOMELAB_DIR/jellyfin/docker-compose.yml${RESET}"
-echo -e "  3. Start a stack:"
-echo -e "     ${CYAN}cd $HOMELAB_DIR/portainer && docker compose up -d${RESET}"
-echo -e "  4. Run ${CYAN}01-os-tweaks.sh${RESET} to configure Mint-specific settings."
-echo -e "  5. Run ${CYAN}02-hardening.sh${RESET} to secure the server."
+echo -e "  2. Set your media path in the .env file:"
+echo -e "     ${CYAN}nano $HOMELAB_DIR/.env${RESET}"
+echo -e "  3. Start the full stack:"
+echo -e "     ${CYAN}cd $HOMELAB_DIR && docker compose up -d${RESET}"
+echo -e "  4. Enable Intel iGPU transcoding in Jellyfin (optional but recommended):"
+echo -e "     Uncomment the 'devices' block in docker-compose.yml, then"
+echo -e "     go to Jellyfin → Dashboard → Playback → Transcoding → Intel QSV"
+echo -e "  5. Run ${CYAN}01-os-tweaks.sh${RESET} to configure Mint-specific settings."
+echo -e "  6. Run ${CYAN}02-hardening.sh${RESET} to secure the server."
 echo ""

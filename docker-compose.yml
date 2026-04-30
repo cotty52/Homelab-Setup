@@ -1,0 +1,203 @@
+# =============================================================================
+# ~/homelab/docker-compose.yml
+# =============================================================================
+# Start everything:  docker compose up -d
+# Stop everything:   docker compose down
+# Update images:     docker compose pull && docker compose up -d
+# View logs:         docker compose logs -f
+# View one service:  docker compose logs -f jellyfin
+# =============================================================================
+
+# ── Shared network ────────────────────────────────────────────────────────
+# All containers (except Jellyfin) join this network, so they can reach each
+# other by service name instead of IP. Nginx Proxy Manager uses these names
+# when you set up proxy hosts in its GUI (e.g. forward to "homarr:7575").
+networks:
+  homelab:
+    driver: bridge
+
+services:
+
+  # ── Portainer ─────────────────────────────────────────────────────────
+  # Docker management GUI. First-run setup at: http://<server-ip>:9000
+  # Create your admin account within 5 minutes of first start or it times out.
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    networks:
+      - homelab
+    ports:
+      - "9000:9000"
+      - "9443:9443"   # HTTPS admin UI (optional)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # lets Portainer manage Docker
+      - ./data/portainer:/data
+
+  # ── Nginx Proxy Manager ───────────────────────────────────────────────
+  # Reverse proxy with a web GUI — set up friendly local URLs for each service.
+  # Admin UI at: http://<server-ip>:81
+  # Default login: admin@example.com / changeme (change immediately on first login)
+  # To proxy a service: Admin UI → Proxy Hosts → Add → forward to <service-name>:<port>
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    networks:
+      - homelab
+    ports:
+      - "80:80"     # HTTP
+      - "443:443"   # HTTPS
+      - "81:81"     # Admin UI
+    volumes:
+      - ./data/nginx-proxy-manager:/data
+      - ./data/nginx-proxy-manager/letsencrypt:/etc/letsencrypt
+
+  # ── Jellyfin ──────────────────────────────────────────────────────────
+  # Media server. Access at: http://<server-ip>:8096
+  #
+  # IMPORTANT: Set MEDIA_PATH below to the folder where your media lives.
+  # e.g.  /home/youruser/media   or   /mnt/storage/media
+  #
+  # Jellyfin uses host networking for best local streaming performance.
+  # This means it talks directly on the host network rather than the
+  # homelab bridge — to proxy it via NPM, forward to <server-ip>:8096.
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York       # ← change to your timezone
+    volumes:
+      - ./data/jellyfin/config:/config
+      - ./data/jellyfin/cache:/cache
+      - ${MEDIA_PATH:-/path/to/media}:/media   # ← set MEDIA_PATH in .env
+    # ── Intel iGPU hardware transcoding ─────────────────────────────────
+    # Uncomment to enable hardware-accelerated transcoding (recommended for
+    # 4K content or multiple simultaneous streams on 12th-gen Intel).
+    # After uncommenting, go to Jellyfin → Dashboard → Playback → Transcoding
+    # and choose "Intel QSV" or "VA-API".
+    #
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "render"
+
+  # ── Homarr ────────────────────────────────────────────────────────────
+  # Homepage dashboard — shows all your services in one place.
+  # Access at: http://<server-ip>:7575
+  # Mounts the Docker socket so Homarr can auto-detect running containers.
+  homarr:
+    image: ghcr.io/ajnart/homarr:latest
+    container_name: homarr
+    restart: unless-stopped
+    networks:
+      - homelab
+    ports:
+      - "7575:7575"
+    volumes:
+      - ./data/homarr/configs:/app/data/configs
+      - ./data/homarr/icons:/app/public/icons
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # ── Additional services — uncomment to enable ─────────────────────────
+
+  # Jellyseerr — media request management (pairs with Jellyfin)
+  # Access at: http://<server-ip>:5055
+  #
+  # jellyseerr:
+  #   image: fallenbagel/jellyseerr:latest
+  #   container_name: jellyseerr
+  #   restart: unless-stopped
+  #   networks:
+  #     - homelab
+  #   ports:
+  #     - "5055:5055"
+  #   environment:
+  #     - TZ=America/New_York
+  #   volumes:
+  #     - ./data/jellyseerr:/app/config
+
+  # Sonarr — TV show automation
+  # Access at: http://<server-ip>:8989
+  #
+  # sonarr:
+  #   image: lscr.io/linuxserver/sonarr:latest
+  #   container_name: sonarr
+  #   restart: unless-stopped
+  #   networks:
+  #     - homelab
+  #   ports:
+  #     - "8989:8989"
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=America/New_York
+  #   volumes:
+  #     - ./data/sonarr:/config
+  #     - ${MEDIA_PATH:-/path/to/media}:/media
+  #     - ${DOWNLOADS_PATH:-/path/to/downloads}:/downloads
+
+  # Radarr — movie automation
+  # Access at: http://<server-ip>:7878
+  #
+  # radarr:
+  #   image: lscr.io/linuxserver/radarr:latest
+  #   container_name: radarr
+  #   restart: unless-stopped
+  #   networks:
+  #     - homelab
+  #   ports:
+  #     - "7878:7878"
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=America/New_York
+  #   volumes:
+  #     - ./data/radarr:/config
+  #     - ${MEDIA_PATH:-/path/to/media}:/media
+  #     - ${DOWNLOADS_PATH:-/path/to/downloads}:/downloads
+
+  # Prowlarr — indexer manager (connects to Sonarr/Radarr)
+  # Access at: http://<server-ip>:9696
+  #
+  # prowlarr:
+  #   image: lscr.io/linuxserver/prowlarr:latest
+  #   container_name: prowlarr
+  #   restart: unless-stopped
+  #   networks:
+  #     - homelab
+  #   ports:
+  #     - "9696:9696"
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=America/New_York
+  #   volumes:
+  #     - ./data/prowlarr:/config
+
+  # qBittorrent — download client
+  # Access at: http://<server-ip>:8080
+  # Default login: admin / adminadmin (change immediately)
+  #
+  # qbittorrent:
+  #   image: lscr.io/linuxserver/qbittorrent:latest
+  #   container_name: qbittorrent
+  #   restart: unless-stopped
+  #   networks:
+  #     - homelab
+  #   ports:
+  #     - "8080:8080"
+  #     - "6881:6881"       # torrent traffic (TCP)
+  #     - "6881:6881/udp"   # torrent traffic (UDP)
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=America/New_York
+  #     - WEBUI_PORT=8080
+  #   volumes:
+  #     - ./data/qbittorrent:/config
+  #     - ${DOWNLOADS_PATH:-/path/to/downloads}:/downloads

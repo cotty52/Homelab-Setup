@@ -1,13 +1,13 @@
-# Homelab Setup
+# homelab-setup
 
-Beginner-friendly homelab setup scripts for Ubuntu + Docker Compose.
+Beginner-friendly homelab setup scripts for Linux Mint + Docker Compose.
 
 ## Structure
 
 ```
 homelab-setup/
 ├── 00-core.sh          # Required — Docker, directory structure, compose starters
-├── 01-os-tweaks.sh     # LinuxMint-specific quality-of-life (screensaver, SSH, timezone)
+├── 01-os-tweaks.sh     # Mint-specific quality-of-life (screensaver, SSH, timezone)
 ├── 02-hardening.sh     # Security hardening (UFW, Fail2ban, SSH lockdown)
 └── lib/
     └── common.sh       # Shared logging, checks, and utilities
@@ -26,7 +26,39 @@ sudo bash 01-os-tweaks.sh  # recommended
 sudo bash 02-hardening.sh  # recommended
 ```
 
-## What gets installed
+## Directory layout after setup
+
+```
+~/homelab/
+├── docker-compose.yml   # single file running the entire stack
+├── .env                 # your personal config (media path, etc.) — edit this first
+└── data/
+    ├── portainer/
+    ├── jellyfin/
+    ├── nginx-proxy-manager/
+    └── homarr/
+```
+
+## Starting your stack
+
+After running `00-core.sh`, log out and back in (for Docker group membership), then:
+
+```bash
+# Set your media path
+nano ~/homelab/.env
+
+# Start everything
+cd ~/homelab && docker compose up -d
+
+# Useful commands
+docker compose logs -f              # tail all logs
+docker compose logs -f jellyfin     # tail one service
+docker compose pull                 # pull latest images
+docker compose up -d                # restart with updated images after pull
+docker compose down                 # stop everything
+```
+
+## Service URLs
 
 | App | Port | Purpose |
 |---|---|---|
@@ -35,33 +67,29 @@ sudo bash 02-hardening.sh  # recommended
 | Nginx Proxy Manager | 81 (admin) / 80 / 443 | Reverse proxy with GUI |
 | Homarr | 7575 | Homepage dashboard |
 
-## Starting your stack
-
-After running `00-core.sh`, log out and back in (for Docker group), then:
-
-```bash
-cd ~/homelab/portainer && docker compose up -d
-cd ~/homelab/jellyfin  && docker compose up -d
-# etc.
-```
-
 ## Notable commented-out options
 
-- **Intel iGPU transcoding** in Jellyfin compose file
-- **Tailscale** remote access VPN in `01-os-tweaks.sh`
-- **Auto-login** in `01-os-tweaks.sh`
-- **Laptop lid-close behavior** in `01-os-tweaks.sh`
-- **SSH key-only login** in `02-hardening.sh`
-- **Custom SSH port** in `02-hardening.sh`
-- **Kernel sysctl hardening** in `02-hardening.sh`
-- **Additional arr-stack ports** (Sonarr, Radarr, etc.) in UFW rules
+**In `docker-compose.yml`:**
+- Intel iGPU hardware transcoding for Jellyfin
+- Jellyseerr (media requests)
+- Full arr stack: Sonarr, Radarr, Prowlarr, qBittorrent
+
+**In `01-os-tweaks.sh`:**
+- Tailscale remote access VPN
+- Auto-login on boot
+- Laptop lid-close behavior
+
+**In `02-hardening.sh`:**
+- SSH key-only login (disable password auth)
+- Custom SSH port
+- Kernel sysctl network hardening
 
 ## Adding more apps
 
-Create a new folder under `~/homelab/` with a `docker-compose.yml` and a `data/` subfolder:
+Add a new service block to `~/homelab/docker-compose.yml`, create its data dir, and restart:
 
 ```bash
-mkdir -p ~/homelab/myapp/data
-nano ~/homelab/myapp/docker-compose.yml
-cd ~/homelab/myapp && docker compose up -d
+mkdir -p ~/homelab/data/myapp
+nano ~/homelab/docker-compose.yml   # add service block
+cd ~/homelab && docker compose up -d
 ```
