@@ -5,13 +5,16 @@
 # This is the only script you MUST run. It sets up Docker and the basic
 # directory structure needed to run any homelab Docker Compose stack.
 #
+# Supported: Linux Mint, CachyOS (see lib/distro/ for the per-distro details)
+#
 # Run with: sudo bash 00-core.sh
 # =============================================================================
 
-source "$(dirname "$0")/lib/common.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
 
 require_sudo
-check_os "linuxmint"
+load_distro
 
 # -----------------------------------------------------------------------------
 # Configuration — edit these before running if needed
@@ -30,17 +33,16 @@ HOMELAB_DIR="$HOMELAB_USER_HOME/homelab"
 DESIRED_HOSTNAME="homelab"
 
 # Essential CLI tools to install alongside Docker.
+# (Each distro driver adds a few of its own on top, see DISTRO_CORE_PACKAGES.)
 CORE_PACKAGES=(
     curl
     git
     htop
     nano
     wget
-    ca-certificates
-    gnupg
-    lsb-release
     net-tools     # provides ifconfig, netstat
     unzip
+    "${DISTRO_CORE_PACKAGES[@]}"
 )
 
 # =============================================================================
@@ -48,9 +50,17 @@ CORE_PACKAGES=(
 # =============================================================================
 section "Updating system packages"
 
-apt-get update -y
-apt-get upgrade -y
+pkg_update
 mark_done "System updated"
+
+# Some distros need a reboot after a kernel update before Docker works reliably.
+if [[ "${REBOOT_REQUIRED:-0}" == "1" ]]; then
+    print_summary
+    warn "The kernel was updated, so the running kernel no longer matches what is installed."
+    warn "Reboot now, then run this script again: sudo bash $0"
+    warn "Steps that are already done are skipped on the second run."
+    exit 0
+fi
 
 # =============================================================================
 # STEP 2 — Install essential CLI tools
@@ -62,34 +72,16 @@ mark_done "Core packages installed"
 
 # =============================================================================
 # STEP 3 — Install Docker Engine
-# We use Docker's official repo, NOT the older version from Ubuntu's repos.
-# The Ubuntu/Mint version is often out of date and missing Compose v2.
+# How Docker is installed depends on the distro (official Docker apt repo on
+# Mint, the regular package repos on CachyOS), see install_docker in
+# lib/distro/<your-distro>.sh
 # =============================================================================
 section "Installing Docker Engine"
 
 if command -v docker &>/dev/null; then
     info "Docker is already installed: $(docker --version)"
 else
-    info "Adding Docker's official GPG key and repository..."
-
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-
-    # Linux Mint is Ubuntu-based. We pull the Ubuntu codename for the repo.
-    # e.g. Mint 21.x → Ubuntu "jammy"; Mint 22.x → Ubuntu "noble"
-    UBUNTU_CODENAME=$(. /etc/upstream-release/lsb_release 2>/dev/null \
-        && echo "$DISTRIB_CODENAME" \
-        || grep -oP '(?<=UBUNTU_CODENAME=).+' /etc/os-release)
-
-    echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-        https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME} stable" \
-        | tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-    apt-get update -y
-    pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    install_docker
 fi
 
 mark_done "Docker Engine installed"
@@ -130,8 +122,13 @@ if [[ "$CURRENT_HOSTNAME" == "$DESIRED_HOSTNAME" ]]; then
     info "Hostname already set to '$DESIRED_HOSTNAME'"
 else
     hostnamectl set-hostname "$DESIRED_HOSTNAME"
-    # Update /etc/hosts so the new hostname resolves locally
-    sed -i "s/127\.0\.1\.1.*/127.0.1.1\t$DESIRED_HOSTNAME/" /etc/hosts
+    # Update /etc/hosts so the new hostname resolves locally.
+    # Mint has a 127.0.1.1 line to edit; some distros (Arch-based) don't, so add one.
+    if grep -q '^127\.0\.1\.1' /etc/hosts; then
+        sed -i "s/127\.0\.1\.1.*/127.0.1.1\t$DESIRED_HOSTNAME/" /etc/hosts
+    else
+        printf '127.0.1.1\t%s\n' "$DESIRED_HOSTNAME" >> /etc/hosts
+    fi
     success "Hostname changed from '$CURRENT_HOSTNAME' to '$DESIRED_HOSTNAME'"
 fi
 
@@ -142,10 +139,23 @@ mark_done "Hostname configured"
 # Everything lives under ~/homelab/ — one compose file, one data/ folder.
 # Persistent data for each app gets its own subfolder under data/ so files
 # stay organised without needing separate directories per app.
+# The starter docker-compose.yml and .env next to this script are copied in
+# (an existing copy is never overwritten).
 # =============================================================================
 section "Creating homelab directory structure"
 
 mkdir -p "$HOMELAB_DIR"/data/{portainer,jellyfin,nginx-proxy-manager,homarr}
+
+for starter in docker-compose.yml .env; do
+    if [[ -f "$HOMELAB_DIR/$starter" ]]; then
+        info "$starter already exists in $HOMELAB_DIR, leaving it alone"
+    elif [[ -f "$SCRIPT_DIR/$starter" ]]; then
+        cp "$SCRIPT_DIR/$starter" "$HOMELAB_DIR/$starter"
+        success "Copied starter $starter to $HOMELAB_DIR"
+    else
+        warn "No $starter found next to this script, so none was copied."
+    fi
+done
 
 chown -R "$HOMELAB_USER":"$HOMELAB_USER" "$HOMELAB_DIR"
 
@@ -167,6 +177,6 @@ echo -e "     ${CYAN}cd $HOMELAB_DIR && docker compose up -d${RESET}"
 echo -e "  4. Enable Intel iGPU transcoding in Jellyfin (optional but recommended):"
 echo -e "     Uncomment the 'devices' block in docker-compose.yml, then"
 echo -e "     go to Jellyfin → Dashboard → Playback → Transcoding → Intel QSV"
-echo -e "  5. Run ${CYAN}01-os-tweaks.sh${RESET} to configure Mint-specific settings."
+echo -e "  5. Run ${CYAN}01-os-tweaks.sh${RESET} to configure OS-specific settings."
 echo -e "  6. Run ${CYAN}02-hardening.sh${RESET} to secure the server."
 echo ""

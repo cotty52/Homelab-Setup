@@ -1,17 +1,33 @@
 # homelab-setup
 
-Beginner-friendly homelab setup scripts for Linux Mint + Docker Compose.
+Beginner-friendly homelab setup scripts for Docker Compose on **Linux Mint** or **CachyOS**.
+
+The scripts detect your distro automatically and use the matching setup.
+
+| Distro | Package manager | Docker comes from | SSH service |
+|---|---|---|---|
+| Linux Mint | apt | Docker's official apt repo | `ssh` |
+| CachyOS | pacman | Arch repos (`docker`, `docker-compose`, `docker-buildx`) | `sshd` |
 
 ## Structure
 
 ```
 homelab-setup/
-├── 00-core.sh          # Required — Docker, directory structure, compose starters
-├── 01-os-tweaks.sh     # Mint-specific quality-of-life (screensaver, SSH, timezone)
+├── 00-core.sh          # Required: Docker, directory structure, compose starters
+├── 01-os-tweaks.sh     # Quality-of-life (screensaver, SSH, timezone)
 ├── 02-hardening.sh     # Security hardening (UFW, Fail2ban, SSH lockdown)
+├── docker-compose.yml  # Starter stack, same on every distro
+├── .env                # Starter config, same on every distro
 └── lib/
-    └── common.sh       # Shared logging, checks, and utilities
+    ├── common.sh       # Shared logging, checks, and utilities + distro detection
+    └── distro/
+        ├── mint.sh     # Everything specific to Linux Mint
+        └── cachyos.sh  # Everything specific to CachyOS
 ```
+
+The three numbered scripts are the same on every distro. Anything that differs
+(installing packages, installing Docker, service names, desktop settings) lives in
+one file per distro under `lib/distro/`.
 
 ## Quick Start
 
@@ -25,6 +41,32 @@ sudo bash 00-core.sh       # always run this first
 sudo bash 01-os-tweaks.sh  # recommended
 sudo bash 02-hardening.sh  # recommended
 ```
+
+`00-core.sh` copies the starter `docker-compose.yml` and `.env` into `~/homelab/`
+(it never overwrites files that are already there).
+
+On an unsupported distro the scripts stop and list what is supported. To force a
+setup anyway (untested), name it yourself:
+
+```bash
+sudo HOMELAB_DISTRO=cachyos bash 00-core.sh
+```
+
+## CachyOS notes
+
+- **Updates are manual.** CachyOS is a rolling release, so unattended upgrades are
+  deliberately not set up. Run `sudo pacman -Syu` every week or two.
+- **Reboot after kernel updates.** If `00-core.sh` updates the kernel, it stops and asks
+  you to reboot, then run it again. Finished steps are skipped on the second run.
+  After any later kernel update, reboot before restarting containers.
+- **Firewall.** CachyOS ships UFW switched off. `02-hardening.sh` configures and enables
+  it. If `firewalld` is running, the script asks before disabling it, since the two
+  conflict.
+- **Desktop settings** (screensaver, display sleep) target KDE Plasma, CachyOS's default.
+  GNOME and XFCE are handled on a best-effort basis. Check
+  System Settings → Energy Saving afterwards, because KDE's power settings vary between
+  Plasma versions.
+- **Auto-login** (optional, commented out in `01-os-tweaks.sh`) is written for SDDM.
 
 ## Directory layout after setup
 
@@ -93,3 +135,10 @@ mkdir -p ~/homelab/data/myapp
 nano ~/homelab/docker-compose.yml   # add service block
 cd ~/homelab && docker compose up -d
 ```
+
+## Adding another distro
+
+Copy `lib/distro/cachyos.sh` to `lib/distro/<name>.sh`, change it for your distro, and
+add one line to the `case` in `load_distro` (`lib/common.sh`). The list of variables and
+functions a driver must provide is documented above `load_distro`, and a driver that is
+missing one fails with a clear error message.

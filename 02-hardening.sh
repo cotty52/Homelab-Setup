@@ -14,19 +14,23 @@
 source "$(dirname "$0")/lib/common.sh"
 
 require_sudo
-check_os "linuxmint"
+load_distro
 
 HOMELAB_USER="${SUDO_USER:-$USER}"
 
 # =============================================================================
 # STEP 1 — UFW Firewall
-# UFW (Uncomplicated Firewall) is the standard firewall tool on Ubuntu/Mint.
+# UFW (Uncomplicated Firewall) is the standard firewall tool on Ubuntu/Mint
+# and ships with CachyOS (switched off by default).
 # We start with a "deny all inbound, allow all outbound" policy and then
 # punch holes only for the services we actually run.
 # =============================================================================
 section "Configuring UFW firewall"
 
 pkg_install ufw
+
+# Make sure no rival firewall manager (e.g. firewalld) is running
+prepare_firewall
 
 # Reset to a clean state before applying rules (safe to re-run)
 ufw --force reset
@@ -53,6 +57,8 @@ ufw allow 7575/tcp           comment "Homarr dashboard"
 
 # Enable the firewall (non-interactive)
 ufw --force enable
+# Make sure the rules are loaded again after a reboot (not automatic on every distro)
+systemctl enable ufw || warn "Could not enable the ufw service, so the firewall may not start on boot."
 success "UFW firewall enabled"
 ufw status verbose
 
@@ -76,13 +82,13 @@ bantime  = 3600
 findtime = 600
 maxretry = 5
 
-# Use systemd backend for log parsing (works well on modern Ubuntu/Mint)
+# Read logins from the systemd journal (works on Mint and CachyOS alike,
+# so no log file path is needed)
 backend = systemd
 
 [sshd]
 enabled = true
 port    = ssh
-logpath = %(sshd_log)s
 EOF
 
 systemctl enable fail2ban
@@ -94,52 +100,71 @@ mark_done "Fail2ban configured"
 # STEP 3 — Harden SSH configuration
 # Disabling root login and password auth (if you use keys) are the two
 # most important SSH hardening steps.
+# The change is checked with `sshd -t` before SSH is restarted, and rolled
+# back if the config is invalid, so a typo cannot lock you out.
 # =============================================================================
 section "Hardening SSH configuration"
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
 
-# Back up original config before modifying
-cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%Y%m%d)"
-info "Backed up sshd_config to ${SSHD_CONFIG}.bak.$(date +%Y%m%d)"
+if [[ ! -f "$SSHD_CONFIG" ]]; then
+    warn "No $SSHD_CONFIG found, so the SSH server is not installed."
+    warn "Run 01-os-tweaks.sh first (it installs and enables SSH), then re-run this script."
+else
+    # Back up original config before modifying (keeps the first backup of the day)
+    SSHD_BACKUP="${SSHD_CONFIG}.bak.$(date +%Y%m%d)"
+    [[ -e "$SSHD_BACKUP" ]] || cp "$SSHD_CONFIG" "$SSHD_BACKUP"
+    info "Backed up sshd_config to $SSHD_BACKUP"
+    # Copy used for rolling back if the new config turns out to be invalid
+    SSHD_ROLLBACK=$(mktemp)
+    cp "$SSHD_CONFIG" "$SSHD_ROLLBACK"
 
-# Disable root login over SSH
-sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' "$SSHD_CONFIG"
-sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' "$SSHD_CONFIG"
-success "Root SSH login disabled"
+    # Disable root login over SSH
+    set_sshd_option PermitRootLogin no
 
-# ── Disable password authentication (KEY-BASED LOGIN ONLY) ───────────────
-# WARNING: Only enable this AFTER you have set up SSH key-based login.
-# If you lock yourself out, you'll need physical access to fix it.
-#
-# To set up key-based login from your client machine:
-#   ssh-keygen -t ed25519           # generate a key pair (once)
-#   ssh-copy-id user@server-ip      # copy your public key to the server
-# Then uncomment:
-#
-# sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
-# sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
-# success "SSH password authentication disabled (key-only login active)"
-# mark_done "SSH key-only login enforced"
+    # ── Disable password authentication (KEY-BASED LOGIN ONLY) ───────────────
+    # WARNING: Only enable this AFTER you have set up SSH key-based login.
+    # If you lock yourself out, you'll need physical access to fix it.
+    #
+    # To set up key-based login from your client machine:
+    #   ssh-keygen -t ed25519           # generate a key pair (once)
+    #   ssh-copy-id user@server-ip      # copy your public key to the server
+    # Then uncomment:
+    #
+    # set_sshd_option PasswordAuthentication no
 
-# ── Change SSH port (security through obscurity) ─────────────────────────
-# Changing from port 22 dramatically reduces automated scan noise in logs.
-# Make sure to update UFW rules to allow the new port before restarting SSH,
-# or you will lose remote access.
-#
-# NEW_SSH_PORT=2222
-# sed -i "s/^#Port 22/Port $NEW_SSH_PORT/" "$SSHD_CONFIG"
-# sed -i "s/^Port 22/Port $NEW_SSH_PORT/" "$SSHD_CONFIG"
-# ufw delete allow ssh
-# ufw allow "$NEW_SSH_PORT"/tcp comment "SSH on custom port"
-# success "SSH port changed to $NEW_SSH_PORT"
-# warn "Update your SSH client config to use port $NEW_SSH_PORT!"
-# mark_done "SSH port changed to $NEW_SSH_PORT"
+    # ── Change SSH port (security through obscurity) ─────────────────────────
+    # Changing from port 22 dramatically reduces automated scan noise in logs.
+    # Make sure to update UFW rules to allow the new port before restarting SSH,
+    # or you will lose remote access. Also change "port = ssh" in the [sshd]
+    # section of /etc/fail2ban/jail.local above to the new port number.
+    #
+    # NEW_SSH_PORT=2222
+    # set_sshd_option Port "$NEW_SSH_PORT"
+    # ufw delete allow ssh
+    # ufw allow "$NEW_SSH_PORT"/tcp comment "SSH on custom port"
+    # success "SSH port changed to $NEW_SSH_PORT"
+    # warn "Update your SSH client config to use port $NEW_SSH_PORT!"
+    # mark_done "SSH port changed to $NEW_SSH_PORT"
 
-# Apply SSH config changes
-systemctl restart ssh
-success "SSH hardening applied"
-mark_done "SSH configuration hardened"
+    # Validate, then apply SSH config changes
+    install -d -m 0755 /run/sshd   # sshd -t needs this directory to exist
+    if sshd -t; then
+        systemctl restart "$SSH_SERVICE"
+        success "SSH hardening applied"
+        if sshd -T 2>/dev/null | grep -qi '^permitrootlogin no'; then
+            success "Confirmed: root login over SSH is disabled"
+        else
+            warn "sshd still reports root login as allowed. Check /etc/ssh/sshd_config.d/ for an override."
+        fi
+        mark_done "SSH configuration hardened"
+    else
+        error "The edited sshd_config is invalid. Restoring the previous version."
+        cp "$SSHD_ROLLBACK" "$SSHD_CONFIG"
+        warn "SSH was left unchanged. Original backup: $SSHD_BACKUP"
+    fi
+    rm -f "$SSHD_ROLLBACK"
+fi
 
 # =============================================================================
 # STEP 4 — Disable unused network services
